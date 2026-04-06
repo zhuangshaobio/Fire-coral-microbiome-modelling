@@ -30,11 +30,6 @@ source("/scratch/users/nus/e1583595/Rmodel/cobrar2sybil.R")
 ## ===== Load models =====
 m1_raw <- readRDS(model1_file)
 m2_raw <- readRDS(model2_file)
-targets <- c(
-  "BET-e0 Exchange",
-  "L-Alanine-e0 Exchange",
-  "L-Lactate-e0 Exchange"
-)
 
 adjust_one_model <- function(model) {
 
