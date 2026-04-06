@@ -1,1 +1,132 @@
+library(BacArena)
+library(cobrar)
+library(readxl)
+library(sybil)
+library(Matrix)
+library(parallel)
 
+SYBIL_SETTINGS("SOLVER", "cplexAPI")
+
+source("cobrar2sybil.R")
+
+abund <- read_excel("relativeabundance.xlsx")
+mag_names <- abund$mags
+rel_ab    <- abund$abundance
+
+model_dir <- "/home/users/nus/y.chang4/finalfilledmodel"
+
+mag_models <- list()
+
+for (i in seq_along(mag_names)) {
+  mag <- mag_names[i]
+  rds_path <- file.path(model_dir, mag, paste0(mag, ".RDS"))
+
+  if (!file.exists(rds_path)) {
+    warning(paste("Model not found:", rds_path))
+    next
+  }
+
+  message(paste("Reading model:", rds_path))
+  m_raw   <- readRDS(rds_path)
+  m_sybil <- cobrar2sybil(m_raw)
+
+  mag_models[[mag]] <- m_sybil
+}
+
+mag_in_both <- intersect(mag_names, names(mag_models))
+mag_names   <- mag_in_both
+rel_ab      <- rel_ab[match(mag_names, abund$mags)]
+rel_ab      <- rel_ab / sum(rel_ab)
+
+cat("Total MAGs simulated:", length(mag_names), "\n")
+
+diet <- read_excel("coralmedia1.xlsx")
+
+grid_n <- 100
+arena  <- Arena(n = grid_n, m = grid_n, Lx = 0.1, Ly = 0.1)
+
+total_cells <- grid_n * grid_n
+occupancy   <- 0.2
+total_inocc <- round(total_cells * occupancy)
+
+rel_ab_named <- rel_ab
+names(rel_ab_named) <- mag_names
+
+assigned_cells <- round(total_inocc * rel_ab_named)
+
+diff <- total_inocc - sum(assigned_cells)
+if (diff != 0) {
+  ord <- order(rel_ab_named, decreasing = TRUE)
+  for (k in seq_len(abs(diff))) {
+    idx <- ord[(k - 1) %% length(ord) + 1]
+    assigned_cells[idx] <- assigned_cells[idx] + sign(diff)
+  }
+}
+
+death_r  <- 0.05
+iter_no  <- 6
+
+for (mag in mag_names) {
+  model_i <- mag_models[[mag]]
+  n_cells <- assigned_cells[mag]
+
+  message(paste("Adding species:", mag, " Count:", n_cells))
+
+  bac <- Bac(
+    model = model_i,
+    cellarea = 2.56,
+    lyse = TRUE,
+    deathrate = death_r,
+    maxweight = 1,
+    minweight = 0.125,
+    growtype = "exponential",
+    setAllExInf = FALSE,
+    limit_growth = TRUE
+  )
+
+  arena <- addOrg(arena, bac, amount = n_cells)
+}
+
+arena <- addSubs(
+  object = arena,
+  mediac = diet$Exchange,
+  smax   = diet$Input_mM,
+  unit   = "mM",
+  add    = FALSE
+)
+
+arena@tstep <- 1
+
+cat("Sim start...\n")
+
+simulation <- simEnv(
+  object  = arena,
+  time    = iter_no,
+  sec_obj = "mtf",
+  continue = TRUE
+)
+
+cat("Sim done\n")
+
+outdir <- "/home/users/nus/y.chang4/Rmodel61_6_4/"
+dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+
+saveRDS(simulation, file.path(outdir, paste0("simulation_66mags_t", iter_no, ".RDS")))
+
+pdf(file.path(outdir, "growth_curve_biomass_all.pdf"), width = 28, height = 20)
+plotGrowthCurve(simulation, use_biomass = TRUE)
+dev.off()
+
+pdf(file.path(outdir, "growth_curve_number_all.pdf"), width = 28, height = 20)
+plotGrowthCurve(simulation, use_biomass = FALSE)
+dev.off()
+
+gc_df <- plotGrowthCurve(simulation, use_biomass = TRUE, ret_data = TRUE)
+write.csv(gc_df, file.path(outdir, "growth_curve_biomass_all.csv"), row.names = FALSE)
+
+gc_df <- plotGrowthCurve(simulation, use_biomass = FALSE, ret_data = TRUE)
+write.csv(gc_df, file.path(outdir, "growth_curve_number_all.csv"), row.names = FALSE)
+
+last_t <-6
+ex_list <- simulation@exchangeslist[[last_t]]
+write.csv(ex_list, file.path(outdir, paste0("exchange_flux_t", last_t, ".csv")), row.names = FALSE)
